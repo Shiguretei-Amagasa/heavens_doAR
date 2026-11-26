@@ -35,7 +35,7 @@ button.main{background:#c0262d;border-color:#fff;font-weight:bold}
 </div>
 
 <script type="module">
-const FD_BASE="https://cdn.jsdelivr.net/npm/@mediapipe/face_detection@0.4.1646425229/";
+const FD_BASE="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@0.4.1633559619/";
 const loadScript=u=>new Promise((ok,ng)=>{const e=document.createElement("script");e.src=u;e.onload=ok;e.onerror=()=>ng(new Error("スクリプトを読み込めません"));document.head.appendChild(e);});
 
 const cv=document.getElementById("c"),ctx=cv.getContext("2d");
@@ -43,17 +43,17 @@ const top_=document.getElementById("top");
 const vid=document.createElement("video");vid.playsInline=true;vid.muted=true;vid.setAttribute("playsinline","");vid.setAttribute("muted","");
 vid.style.cssText="position:fixed;width:1px;height:1px;opacity:0;pointer-events:none";document.body.appendChild(vid);
 let cw=0,ch=0,dpr=1,detector=null,facing="environment",mirror=false,stream=null;
-let fdReady=false,lastDet=[],detBusy=false,face=null,lastSeen=0,book=null,wantSnap=false,lines=[],linesT=0;
+let fdReady=false,lmNew=null,sm=null,detBusy=false,face=null,lastSeen=0,book=null,wantSnap=false,lines=[],linesT=0;
 
 const FORTUNES=[
- ["大吉","迷っていたことに答えが出る。今日は読むべきページをめくれ。","ラッキー：万年筆"],
- ["吉","小さな偶然が背中を押す。見逃さずに拾え。","ラッキー：スケッチブック"],
- ["中吉","人との会話にヒントがある。聞き役に回ると吉。","ラッキー：赤いもの"],
- ["小吉","急がず進めば良し。細部にこだわると運が開く。","ラッキー：コーヒー"],
- ["末吉","午後から流れが変わる。昼までは準備に徹しろ。","ラッキー：古い本"],
- ["吉","ひらめきは散歩中にやって来る。外に出ろ。","ラッキー：イヤホン"],
- ["凶","余計な一言に注意。書く前に一呼吸おけ。","ラッキー：深呼吸"],
- ["大吉","あなたの『リアリティ』が人を動かす日。自信を持て。","ラッキー：黒インク"]
+ ["大吉","今日は読むべきページを開け","ラッキー：万年筆"],
+ ["吉","小さな偶然を見逃すな","ラッキー：スケッチ帳"],
+ ["中吉","人の話にヒントがある","ラッキー：赤いもの"],
+ ["小吉","細部にこだわれば運が開く","ラッキー：コーヒー"],
+ ["末吉","午後から流れが変わる","ラッキー：古い本"],
+ ["吉","ひらめきは散歩中に来る","ラッキー：イヤホン"],
+ ["凶","書く前に一呼吸おけ","ラッキー：深呼吸"],
+ ["大吉","あなたのリアリティが動かす","ラッキー：黒インク"]
 ];
 const norm=s=>s.replace(/[ぁ-ゖ]/g,c=>String.fromCharCode(c.charCodeAt(0)+0x60)).replace(/\s/g,"");
 
@@ -135,53 +135,82 @@ function wrap(text,maxW){
   if(cur)out.push(cur);return out;
 }
 
+const OVAL=[10,338,297,332,284,251,389,356,454,323,361,288,397,365,379,378,400,377,152,148,176,149,150,136,172,58,132,93,234,127,162,21,54,103,67,109];
+const LE=[263,249,390,373,374,380,381,382,362,398,384,385,386,387,388,466];
+const RE=[33,7,163,144,145,153,154,155,133,173,157,158,159,160,161,246];
+const MO=[61,146,91,181,84,17,314,405,321,375,291,409,270,269,267,0,37,39,40,185];
+function grow(pts,k){let cx=0,cy=0;for(const p of pts){cx+=p[0];cy+=p[1];}cx/=pts.length;cy/=pts.length;return pts.map(p=>[cx+(p[0]-cx)*k,cy+(p[1]-cy)*k]);}
+function buildFace(m){
+  const pick=ix=>ix.map(i=>[m[2*i],m[2*i+1]]);
+  const oval=pick(OVAL);
+  let x0=1e9,y0=1e9,x1=-1e9,y1=-1e9;
+  for(const p of oval){x0=Math.min(x0,p[0]);y0=Math.min(y0,p[1]);x1=Math.max(x1,p[0]);y1=Math.max(y1,p[1]);}
+  return {x:(x0+x1)/2,y:(y0+y1)/2,w:x1-x0,h:y1-y0,x0,y0,x1,y1,polys:[oval,grow(pick(LE),1.3),grow(pick(RE),1.3),grow(pick(MO),1.12)]};
+}
+function polyPath(polys,sx,sy){
+  ctx.beginPath();
+  for(const poly of polys){poly.forEach((p,i)=>i?ctx.lineTo(p[0]*sx,p[1]*sy):ctx.moveTo(p[0]*sx,p[1]*sy));ctx.closePath();}
+}
+
+/* 集中線：顔に向かって細くなる針状の線 */
 function drawLines(f,now){
-  if(now-linesT>90){ // 漫画っぽくカクカク更新
+  if(now-linesT>90){
     linesT=now;lines=[];
-    for(let i=0;i<90;i++)lines.push({a:i/90*Math.PI*2+(Math.random()-.5)*.05,l:.25+Math.random()*.9,w:.01+Math.random()*.03});
+    for(let i=0;i<190;i++)lines.push({a:i/190*Math.PI*2+(Math.random()-.5)*.03,s:Math.random(),l:.7+Math.random()*.45,w:.8+Math.random()*3});
   }
-  const R=Math.max(f.w,f.h);
+  const far=Math.hypot(cw,ch);
   ctx.save();ctx.translate(f.x,f.y);ctx.fillStyle="#000";
   for(const L of lines){
     const ca=Math.cos(L.a),sa=Math.sin(L.a);
-    const r0=Math.hypot(f.w*.62*ca,f.h*.62*sa)*1.15;
-    const r1=r0+R*L.l;
-    const px=-sa,py=ca,bw=R*L.w;
-    ctx.beginPath();
-    ctx.moveTo(ca*r0+px*bw,sa*r0+py*bw);
-    ctx.lineTo(ca*r1,sa*r1);
-    ctx.lineTo(ca*r0-px*bw,sa*r0-py*bw);
-    ctx.closePath();ctx.fill();
+    const rf=Math.hypot(f.w*.5*ca,f.h*.5*sa);
+    const r0=rf*(1.2+L.s*.9),r1=Math.max(r0+60,far*L.l);
+    const px=-sa*L.w/2,py=ca*L.w/2;
+    ctx.beginPath();ctx.moveTo(ca*r0,sa*r0);ctx.lineTo(ca*r1+px,sa*r1+py);ctx.lineTo(ca*r1-px,sa*r1-py);ctx.closePath();ctx.fill();
   }
   ctx.restore();
 }
 
+/* 顔の形の本：目と口は開けておく／左端を綴じ目に左へ開く */
 function drawBook(f,now){
-  const W=f.w,H=f.h,x0=f.x-W/2,top=f.y-H/2;
+  const W=f.w,H=f.h;
   const t=Math.min((now-book.t0)/1500,1),th=ease(t)*Math.PI;
-  const rr=()=>ctx.roundRect(0,0,W,H,5);
-  // 下のページ（顔全面ぶん・今日の運勢）
-  ctx.save();ctx.translate(x0,top);
-  ctx.beginPath();rr();ctx.clip();
-  ctx.drawImage(paperA,0,0,W,H);
+  // 下のページ（運勢）
+  ctx.save();polyPath(f.polys,1,1);ctx.clip("evenodd");
+  ctx.drawImage(paperA,f.x0,f.y0,W,H);
   if(t>.5){
     ctx.globalAlpha=Math.min((t-.5)/.3,1);
-    const fs=Math.min(W,H*.85)/10,cx=W/2;
-    ctx.strokeStyle="rgba(58,40,20,.55)";ctx.lineWidth=1.5;
-    ctx.strokeRect(W*.06,H*.05,W*.88,H*.9);
+    const ys=a=>a.map(p=>p[1]);
+    const eyeTop=Math.min(...ys(f.polys[1]),...ys(f.polys[2])),eyeBot=Math.max(...ys(f.polys[1]),...ys(f.polys[2]));
+    const moTop=Math.min(...ys(f.polys[3])),moBot=Math.max(...ys(f.polys[3]));
     ctx.textAlign="center";ctx.textBaseline="top";
-    let y=H*.1;
-    ctx.fillStyle="#3a2814";ctx.font=`${fs*.85}px serif`;ctx.fillText("今日の運勢",cx,y);y+=fs*1.4;
-    ctx.fillStyle="#8e2018";ctx.font=`bold ${fs*3.2}px serif`;ctx.fillText(book.fx[0],cx,y);y+=fs*3.8;
-    ctx.fillStyle="#3a2814";ctx.font=`${fs*.8}px serif`;
-    for(const ln of wrap(book.fx[1],W*.76)){ctx.fillText(ln,cx,y);y+=fs*1.2;}
-    y+=fs*.4;ctx.fillStyle="#5a3a1c";ctx.fillText(book.fx[2],cx,y);
+    // 額：今日の運勢＋ランク
+    const fy0=f.y0+H*.04,zh=eyeTop-H*.07-fy0;
+    if(zh>10){
+      const fsT=Math.min(zh*.28,W*.07),fsR=Math.min(zh*.58,W*.2);
+      ctx.fillStyle="#3a2814";ctx.font=`${fsT}px serif`;ctx.fillText("今日の運勢",f.x,fy0);
+      ctx.fillStyle="#8e2018";ctx.font=`bold ${fsR}px serif`;ctx.fillText(book.fx[0],f.x,fy0+fsT*1.2);
+    }
+    // 目と口の間：ひとこと
+    const my0=eyeBot+H*.012,mh=moTop-H*.012-my0;
+    if(mh>8){
+      const fs=Math.min(mh/2.3,W*.06);
+      ctx.fillStyle="#3a2814";ctx.font=`${fs}px serif`;
+      let y=my0+(mh-fs*1.15*Math.min(2,wrap(book.fx[1],W*.55).length))/2;
+      for(const ln of wrap(book.fx[1],W*.55).slice(0,2)){ctx.fillText(ln,f.x,y);y+=fs*1.15;}
+    }
+    // 顎：ラッキーアイテム
+    const cy0=moBot+H*.012,zc=f.y1-H*.05-cy0;
+    if(zc>8){
+      const fs=Math.min(zc*.7,W*.055);
+      ctx.fillStyle="#5a3a1c";ctx.font=`${fs}px serif`;ctx.fillText(book.fx[2],f.x,cy0+(zc-fs)/2);
+    }
   }
   ctx.restore();
-  // めくれる表紙ページ（顔全面）：左端の綴じ目を軸に左へ開く
+  ctx.strokeStyle="#2a1a0c";ctx.lineWidth=2;ctx.lineJoin="round";polyPath(f.polys,1,1);ctx.stroke();
+  // めくれる表面（撮影時の顔の形）
   const s=Math.cos(th);
-  ctx.save();ctx.translate(x0,top);ctx.scale(s,1);
-  ctx.save();ctx.beginPath();rr();ctx.clip();
+  ctx.save();ctx.translate(f.x0,f.y0);ctx.scale(s,1);
+  ctx.save();polyPath(book.norm,W,H);ctx.clip("evenodd");
   if(th<Math.PI/2){
     ctx.drawImage(book.snap,0,0,W,H);
     ctx.fillStyle=`rgba(90,55,20,${.35*Math.sin(th)})`;ctx.fillRect(0,0,W,H);
@@ -189,15 +218,15 @@ function drawBook(f,now){
     ctx.drawImage(paperB,0,0,W,H);
     ctx.globalAlpha=.25;ctx.drawImage(book.snap,0,0,W,H);ctx.globalAlpha=1;
     ctx.strokeStyle="rgba(70,45,20,.22)";ctx.lineWidth=1/Math.max(Math.abs(s),.1);
-    for(let i=1;i<12;i++){ctx.beginPath();ctx.moveTo(W*.1,H*i/12);ctx.lineTo(W*.9,H*i/12);ctx.stroke();}
+    for(let i=1;i<14;i++){ctx.beginPath();ctx.moveTo(0,H*i/14);ctx.lineTo(W,H*i/14);ctx.stroke();}
     ctx.fillStyle=`rgba(0,0,0,${.3*Math.sin(th)})`;ctx.fillRect(0,0,W,H);
   }
   ctx.restore();
-  ctx.strokeStyle="#2a1a0c";ctx.lineWidth=2/Math.max(Math.abs(s),.1);
-  ctx.beginPath();rr();ctx.stroke();
+  ctx.strokeStyle="#2a1a0c";ctx.lineWidth=2/Math.max(Math.abs(s),.1);ctx.lineJoin="round";
+  polyPath(book.norm,W,H);ctx.stroke();
   ctx.restore();
   // 綴じ目
-  ctx.fillStyle="#2a1a0c";ctx.fillRect(x0-2,top-4,4,H+8);
+  ctx.fillStyle="#2a1a0c";ctx.fillRect(f.x0-2,f.y0+H*.2,4,H*.6);
 }
 
 function frame(now){
@@ -210,29 +239,27 @@ function frame(now){
   ctx.drawImage(vid,ox,oy,vw*s,vh*s);
   ctx.restore();
 
-  // 顔検出（最大の顔）
+  // 顔ランドマーク（468点）
   if(!detBusy){detBusy=true;detector.send({image:vid}).catch(()=>{}).finally(()=>{detBusy=false;});}
-  let best=null,ba=0;
-  for(const d of lastDet){
-    const b=d.boundingBox,a=b.width*b.height;
-    if(a>ba){ba=a;best={originX:(b.xCenter-b.width/2)*vw,originY:(b.yCenter-b.height/2)*vh,width:b.width*vw,height:b.height*vh};}
-  }
-  if(best){
-    let cx=ox+(best.originX+best.width/2)*s;if(mirror)cx=cw-cx;
-    const n={x:cx,y:oy+(best.originY+best.height*.48)*s,w:best.width*s*1.2,h:best.height*s*1.35};
-    face=face?{x:face.x+(n.x-face.x)*.4,y:face.y+(n.y-face.y)*.4,w:face.w+(n.w-face.w)*.3,h:face.h+(n.h-face.h)*.3}:n;
-    lastSeen=now;
-  }else if(now-lastSeen>600)face=null;
+  if(lmNew){
+    const first=!sm;if(first)sm=new Float32Array(468*2);
+    for(let i=0;i<468;i++){
+      let x=ox+lmNew[i].x*vw*s;if(mirror)x=cw-x;
+      const y=oy+lmNew[i].y*vh*s;
+      if(first){sm[2*i]=x;sm[2*i+1]=y;}else{sm[2*i]+=(x-sm[2*i])*.55;sm[2*i+1]+=(y-sm[2*i+1])*.55;}
+    }
+    face=buildFace(sm);lastSeen=now;
+  }else if(now-lastSeen>600){face=null;sm=null;}
 
   if(!face){msg(fdReady?"顔にカメラを向けてください":"顔認識モデルを読み込み中…（初回は数秒かかります）");return;}
   msg(book?"今日の運勢——":"「ヘブンズドアー」と言ってみろ");
 
-  if(wantSnap){ // 発動：顔の右半分を静止画として切り出し
+  if(wantSnap){ // 発動：顔全体を静止画として切り出し、顔の形も記録
     wantSnap=false;
-    const sx=face.x-face.w/2,sy=face.y-face.h/2,sw=face.w,sh=face.h;
-    const o=document.createElement("canvas");o.width=Math.max(1,sw*dpr);o.height=Math.max(1,sh*dpr);
-    o.getContext("2d").drawImage(cv,sx*dpr,sy*dpr,sw*dpr,sh*dpr,0,0,o.width,o.height);
-    book={snap:o,t0:now,fx:FORTUNES[Math.floor(Math.random()*FORTUNES.length)]};
+    const o=document.createElement("canvas");o.width=Math.max(1,face.w*dpr);o.height=Math.max(1,face.h*dpr);
+    o.getContext("2d").drawImage(cv,face.x0*dpr,face.y0*dpr,face.w*dpr,face.h*dpr,0,0,o.width,o.height);
+    const norm=face.polys.map(poly=>poly.map(p=>[(p[0]-face.x0)/face.w,(p[1]-face.y0)/face.h]));
+    book={snap:o,norm,t0:now,fx:FORTUNES[Math.floor(Math.random()*FORTUNES.length)]};
   }
   drawLines(face,now);
   if(book)drawBook(face,now);
@@ -246,11 +273,11 @@ document.getElementById("go").onclick=async()=>{
     b.textContent="カメラ起動中…（許可してください）";
     await wt(startCam(),30000,"カメラ起動");
     b.textContent="顔認識エンジン読込中…";
-    await wt(loadScript(FD_BASE+"face_detection.js"),30000,"顔認識エンジンの読込");
+    await wt(loadScript(FD_BASE+"face_mesh.js"),30000,"顔認識エンジンの読込");
     b.textContent="起動中…";
-    const fd=new window.FaceDetection({locateFile:f=>FD_BASE+f});
-    fd.setOptions({model:"short",minDetectionConfidence:.5});
-    fd.onResults(r=>{fdReady=true;lastDet=r.detections||[];});
+    const fd=new window.FaceMesh({locateFile:f=>FD_BASE+f});
+    fd.setOptions({maxNumFaces:1,refineLandmarks:false,minDetectionConfidence:.5,minTrackingConfidence:.5});
+    fd.onResults(r=>{fdReady=true;lmNew=(r.multiFaceLandmarks&&r.multiFaceLandmarks[0])||null;});
     detector=fd;
     document.getElementById("start").hidden=true;document.getElementById("ui").hidden=false;
     running=true;startSpeech();requestAnimationFrame(frame);
