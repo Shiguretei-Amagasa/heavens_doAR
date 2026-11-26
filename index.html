@@ -41,7 +41,8 @@ const MODEL="https://storage.googleapis.com/mediapipe-models/face_detector/blaze
 
 const cv=document.getElementById("c"),ctx=cv.getContext("2d");
 const top_=document.getElementById("top");
-const vid=document.createElement("video");vid.playsInline=true;vid.muted=true;
+const vid=document.createElement("video");vid.playsInline=true;vid.muted=true;vid.setAttribute("playsinline","");vid.setAttribute("muted","");
+vid.style.cssText="position:fixed;width:1px;height:1px;opacity:0;pointer-events:none";document.body.appendChild(vid);
 let cw=0,ch=0,dpr=1,detector=null,facing="environment",mirror=false,stream=null;
 let face=null,lastSeen=0,book=null,wantSnap=false,lines=[],linesT=0;
 
@@ -236,15 +237,21 @@ function frame(now){
 }
 
 /* --- boot --- */
+const wt=(p,ms,label)=>Promise.race([p,new Promise((_,r)=>setTimeout(()=>r(new Error(label+"がタイムアウトしました")),ms))]);
 document.getElementById("go").onclick=async()=>{
-  const b=document.getElementById("go");b.disabled=true;b.textContent="準備中…";
+  const b=document.getElementById("go");b.disabled=true;
   try{
-    await startCam();
-    const fs=await FilesetResolver.forVisionTasks(WASM);
-    detector=await FaceDetector.createFromOptions(fs,{baseOptions:{modelAssetPath:MODEL,delegate:"GPU"},runningMode:"VIDEO",minDetectionConfidence:.5});
+    b.textContent="カメラ起動中…（許可してください）";
+    await wt(startCam(),30000,"カメラ起動");
+    b.textContent="認識エンジン読込中…";
+    const fs=await wt(FilesetResolver.forVisionTasks(WASM),30000,"認識エンジンの読込");
+    b.textContent="顔認識モデル読込中…";
+    const mk=d=>FaceDetector.createFromOptions(fs,{baseOptions:{modelAssetPath:MODEL,delegate:d},runningMode:"VIDEO",minDetectionConfidence:.5});
+    try{detector=await wt(mk("GPU"),15000,"GPU初期化");}
+    catch(e){b.textContent="CPUで再試行中…";detector=await wt(mk("CPU"),30000,"顔認識モデルの読込");}
     document.getElementById("start").hidden=true;document.getElementById("ui").hidden=false;
     running=true;startSpeech();requestAnimationFrame(frame);
-  }catch(e){b.disabled=false;b.textContent="はじめる";alert("起動に失敗: "+e.message+"\n（HTTPSで開き、カメラ/マイクを許可してください）");}
+  }catch(e){b.disabled=false;b.textContent="はじめる";alert("起動に失敗: "+(e.message||e)+"\n（HTTPSで開き、カメラ/マイクを許可してください）");}
 };
 document.getElementById("say").onclick=trigger;
 document.getElementById("close").onclick=()=>{book=null;};
