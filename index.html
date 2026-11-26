@@ -42,7 +42,7 @@ const top_=document.getElementById("top");
 const vid=document.createElement("video");vid.playsInline=true;vid.muted=true;vid.setAttribute("playsinline","");vid.setAttribute("muted","");
 vid.style.cssText="position:fixed;width:1px;height:1px;opacity:0;pointer-events:none";document.body.appendChild(vid);
 let cw=0,ch=0,dpr=1,detector=null,facing="environment",mirror=false,stream=null;
-let lastDet=[],detBusy=false,face=null,lastSeen=0,book=null,wantSnap=false,lines=[],linesT=0;
+let fdReady=false,lastDet=[],detBusy=false,face=null,lastSeen=0,book=null,wantSnap=false,lines=[],linesT=0;
 
 const FORTUNES=[
  ["大吉","迷っていたことに答えが出る。今日は読むべきページをめくれ。","ラッキー：万年筆"],
@@ -223,7 +223,7 @@ function frame(now){
     lastSeen=now;
   }else if(now-lastSeen>600)face=null;
 
-  if(!face){msg("顔にカメラを向けてください");return;}
+  if(!face){msg(fdReady?"顔にカメラを向けてください":"顔認識モデルを読み込み中…（初回は数秒かかります）");return;}
   msg(book?"今日の運勢——":"「ヘブンズドアー」と言ってみろ");
 
   if(wantSnap){ // 発動：顔の右半分を静止画として切り出し
@@ -246,11 +246,10 @@ document.getElementById("go").onclick=async()=>{
     await wt(startCam(),30000,"カメラ起動");
     b.textContent="顔認識エンジン読込中…";
     await wt(loadScript(FD_BASE+"face_detection.js"),30000,"顔認識エンジンの読込");
-    b.textContent="顔認識モデル読込中…（初回は少し時間がかかります）";
+    b.textContent="起動中…";
     const fd=new window.FaceDetection({locateFile:f=>FD_BASE+f});
     fd.setOptions({model:"short",minDetectionConfidence:.5});
-    fd.onResults(r=>{lastDet=r.detections||[];});
-    await wt(fd.initialize(),60000,"顔認識モデルの読込");
+    fd.onResults(r=>{fdReady=true;lastDet=r.detections||[];});
     detector=fd;
     document.getElementById("start").hidden=true;document.getElementById("ui").hidden=false;
     running=true;startSpeech();requestAnimationFrame(frame);
